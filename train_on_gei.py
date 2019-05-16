@@ -185,12 +185,6 @@ class LearnerEx(Learner):
         if k == 'recorder' and hasattr(self, 'recorder_ex'):
             return self.recorder_ex
         else: raise AttributeError
-    def get_preds(self, ds_type:DatasetType=DatasetType.Valid, with_loss:bool=False, n_batch:Optional[int]=None,
-                  pbar:Optional[PBar]=None) -> List[Tensor]:
-        "Return predictions and targets on `ds_type` dataset."
-        lf = self.loss_func if with_loss else None
-        return get_preds(self.model, self.dl(ds_type), cb_handler=CallbackHandler(self.callbacks),
-                         activ=_loss_func2activ(self.loss_func), loss_func=lf, n_batch=n_batch, pbar=pbar)
 
 _init_w = partial(nn.init.normal_, mean=0., std=0.01)
 _lrn = nn.LocalResponseNorm(5, alpha=0.0001, beta=0.75, k=2.)
@@ -235,7 +229,7 @@ def main(
         epochs:Param("Number of epochs", int)=240,
         task:Param("Task to do (tr/ts)", str)='tr',
         split:Param("Target split to use (tr/vl/ts)", str)='tr',
-        trained_model:Param("Load from pre-trained model", str)=None,
+        trained:Param("Load from trained model", str)=None,
     ):
     """Train models for cross-view gait recognition."""
     torch.cuda.set_device(int(gpu))
@@ -260,7 +254,7 @@ def main(
     else:
         # callback_fns are never called in get_preds
         learn.callbacks += [learn.callback_fns[0](learn)]
-        learn.load(trained_model)
+        learn.load(trained)
         _ = learn.get_preds()
         xl = learn.data.valid_dl.x
         acc = _calc_acc(learn.recorder.preds, xl.items1.inner_df, xl.items2.inner_df)
