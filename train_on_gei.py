@@ -225,10 +225,11 @@ def main(
         lr:Param("Learning rate", float)=0.01,
         mom:Param("Momentum", float)=0.9,
         wd:Param("Weight decay", float)=0.0005,
+        sched:Param("Learning rate schedule", str)='st-15-90',
         bs:Param("Batch size", int)=128,
         epochs:Param("Number of epochs", int)=240,
         task:Param("Task to do (tr/ts)", str)='tr',
-        split:Param("Target split to use (tr/vl/ts)", str)='tr',
+        split:Param("Target split to use (tr/vl/tv/ts)", str)='tr',
         trained:Param("Load from trained model", str)=None,
     ):
     """Train models for cross-view gait recognition."""
@@ -241,13 +242,15 @@ def main(
     learn = LearnerEx(data, net, opt_func=optim.SGD, metrics=accuracy, wd=wd, path=Path('..'), model_dir=model_dir)
     learn.callback_fns[0] = partial(RecorderEx, add_time=learn.add_time)
     if task=='tr':
+        model_name = f'{dataset}_{model}_{opt}-{lr}-{mom}-{wd}_{sched}_bs{bs}_{split}'
+        assert sched.startswith('st-')
+        iters = array([float(x)*10000 for x in sched.split('-')[1:]])
         batches = len(data.train_dl) * epochs
-        ph1 = (TrainingPhase(batches*1/8).schedule_hp('lr', lr))
-        ph2 = (TrainingPhase(batches*5/8).schedule_hp('lr', lr/10))
-        ph3 = (TrainingPhase(batches*2/8).schedule_hp('lr', lr/100))
-        model_name = f'{dataset}_{model}_{opt}-{lr}-{mom}-{wd}_bs{bs}_{split}'
+        assert np.all(iters < batches)
+        iters = np.append(iters, batches).astype(np.int)
+        phs = [TrainingPhase(x).schedule_hp('lr', lr*0.1**i) for i,x in enumerate(iters)]
         learn.callback_fns += [
-            partial(GeneralScheduler, phases=(ph1,ph2,ph3)),
+            partial(GeneralScheduler, phases=phs),
             partial(SaveModelCallback, every='epoch', name=model_name),
         ]
         learn.fit(epochs, 1)
