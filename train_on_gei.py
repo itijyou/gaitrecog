@@ -239,7 +239,9 @@ def main(
     if get_net: net = get_net()
     else: assert False, 'Not implemented for model {}.'.format(model)
     model_dir = Path('output')/dataset
-    learn = LearnerEx(data, net, opt_func=optim.SGD, metrics=accuracy, wd=wd, path=Path('..'), model_dir=model_dir)
+    assert opt == 'sgd', f'Unknown opt method {opt}'
+    opt_func = partial(optim.SGD, momentum=mom)
+    learn = LearnerEx(data, net, opt_func=opt_func, metrics=accuracy, wd=wd, path=Path('..'), model_dir=model_dir)
     learn.callback_fns[0] = partial(RecorderEx, add_time=learn.add_time)
     if task=='tr':
         model_name = f'{dataset}_{model}_{opt}-{lr}-{mom}-{wd}_{sched}_bs{bs}_{split}'
