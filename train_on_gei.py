@@ -206,6 +206,23 @@ class LBNet(nn.Module):
         x = _relu(_maxpool(_lrn(self.conv2(x))))
         x = _dropout(self.conv3(x))
         return self.fc(x.view(x.size(0), -1))
+class MTNet(nn.Module):
+    "Mid-level @ Top."
+    def __init__(self):
+        super().__init__()
+        self.zscore = batchnorm_2d(2, NormType.Batch)
+        self.conv1 = conv2d(1, 16, 7, 1, 0, True, _init_w)
+        self.conv2 = conv2d(16, 64, 7, 1, 0, True, _init_w)
+        self.conv3 = conv2d(128, 256, 7, 1, 0, True, _init_w)
+        self.fc = nn.Linear(256 * 21 * 11, 2)
+    def forward(self, x):
+        with torch.no_grad(): x = self.zscore(x)
+        def _convs(x):
+            x = _relu(_maxpool(_lrn(self.conv1(x))))
+            return _relu(_maxpool(_lrn(self.conv2(x))))
+        x = torch.cat([_convs(i) for i in torch.split(x, 1, dim=1)], dim=1)
+        x = _dropout(self.conv3(x))
+        return self.fc(x.view(x.size(0), -1))
 
 import contextlib
 @contextlib.contextmanager
@@ -235,7 +252,7 @@ def main(
     """Train models for cross-view gait recognition."""
     torch.cuda.set_device(int(gpu))
     data = get_data(Path('../data'), dataset, splits, bs, task, split)
-    get_net = {'lb':LBNet, 'mt':None, 'gt':None}.get(model, None)
+    get_net = {'lb':LBNet, 'mt':MTNet, 'gt':None}.get(model, None)
     if get_net: net = get_net()
     else: assert False, 'Not implemented for model {}.'.format(model)
     model_dir = Path('output')/dataset
@@ -245,7 +262,7 @@ def main(
     learn.callback_fns[0] = partial(RecorderEx, add_time=learn.add_time)
     if task=='tr':
         model_name = f'{dataset}_{model}_{opt}-{lr}-{mom}-{wd}_{sched}_bs{bs}_{split}'
-        assert sched.startswith('st-')
+        assert sched.startswith('st')
         iters = array([float(x)*10000 for x in sched.split('-')[1:]])
         batches = len(data.train_dl) * epochs
         assert np.all(iters < batches)
