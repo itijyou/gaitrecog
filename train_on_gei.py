@@ -198,7 +198,7 @@ class GaitNet(nn.Module):
         self.do_zscore = do_zscore
     def forward(self, x):
         raise Exception("Your data isn't labeled, can't turn it in a `DataBunch` yet!")
-class LBNet(nn.Module):
+class LBNet(GaitNet):
     "Local @ Bottom with 3 conv layers."
     def __init__(self):
         super().__init__()
@@ -215,7 +215,7 @@ class LBNet(nn.Module):
         #x = _dropout(self.conv3(x))# missed the ReLU
         x = _dropout(_relu(self.conv3(x)))
         return self.fc(x.view(x.size(0), -1))
-class MTNet(nn.Module):
+class MTNet(GaitNet):
     "Mid-level @ Top with 3 conv layers."
     def __init__(self):
         super().__init__()
@@ -233,7 +233,7 @@ class MTNet(nn.Module):
         x = torch.cat([_convs(i) for i in torch.split(x, 1, dim=1)], dim=1)
         x = _dropout(_relu(self.conv3(x)))
         return self.fc(x.view(x.size(0), -1))
-class SiameseNet(nn.Module):
+class SiameseNet(GaitNet):
     "Siamese with 3 conv layers."
     def __init__(self):
         super().__init__()
