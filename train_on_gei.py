@@ -191,37 +191,65 @@ _lrn = nn.LocalResponseNorm(5, alpha=0.0001, beta=0.75, k=2.)
 _maxpool = nn.MaxPool2d(2, 2, 0)
 _relu = nn.ReLU()
 _dropout = nn.Dropout()
+class GaitNet(nn.Module):
+    #"Base class for gait recognition."
+    def __init__(self, do_zscore:bool=True):
+        super().__init__()
+        self.do_zscore = do_zscore
+    def forward(self, x):
+        raise Exception("Your data isn't labeled, can't turn it in a `DataBunch` yet!")
 class LBNet(nn.Module):
-    "Local @ Bottom."
+    "Local @ Bottom with 3 conv layers."
     def __init__(self):
         super().__init__()
-        self.zscore = batchnorm_2d(2, NormType.Batch)
+        if self.do_zscore: self.zscore = batchnorm_2d(2, NormType.Batch)
         self.conv1 = conv2d(2, 16, 7, 1, 0, True, _init_w)
         self.conv2 = conv2d(16, 64, 7, 1, 0, True, _init_w)
         self.conv3 = conv2d(64, 256, 7, 1, 0, True, _init_w)
         self.fc = nn.Linear(256 * 21 * 11, 2)
     def forward(self, x):
-        with torch.no_grad(): x = self.zscore(x)
+        if self.do_zscore:
+            with torch.no_grad(): x = self.zscore(x)
         x = _relu(_maxpool(_lrn(self.conv1(x))))
         x = _relu(_maxpool(_lrn(self.conv2(x))))
         x = _dropout(self.conv3(x))
         return self.fc(x.view(x.size(0), -1))
 class MTNet(nn.Module):
-    "Mid-level @ Top."
+    "Mid-level @ Top with 3 conv layers."
     def __init__(self):
         super().__init__()
-        self.zscore = batchnorm_2d(2, NormType.Batch)
+        if self.do_zscore: self.zscore = batchnorm_2d(2, NormType.Batch)
         self.conv1 = conv2d(1, 16, 7, 1, 0, True, _init_w)
         self.conv2 = conv2d(16, 64, 7, 1, 0, True, _init_w)
         self.conv3 = conv2d(128, 256, 7, 1, 0, True, _init_w)
         self.fc = nn.Linear(256 * 21 * 11, 2)
     def forward(self, x):
-        with torch.no_grad(): x = self.zscore(x)
+        if self.do_zscore:
+            with torch.no_grad(): x = self.zscore(x)
         def _convs(x):
             x = _relu(_maxpool(_lrn(self.conv1(x))))
             return _relu(_maxpool(_lrn(self.conv2(x))))
         x = torch.cat([_convs(i) for i in torch.split(x, 1, dim=1)], dim=1)
         x = _dropout(self.conv3(x))
+        return self.fc(x.view(x.size(0), -1))
+class SiameseNet(nn.Module):
+    "Siamese with 3 conv layers."
+    def __init__(self):
+        super().__init__()
+        if self.do_zscore: self.zscore = batchnorm_2d(2, NormType.Batch)
+        self.conv1 = conv2d(1, 16, 7, 1, 0, True, _init_w)
+        self.conv2 = conv2d(16, 64, 7, 1, 0, True, _init_w)
+        self.conv3 = conv2d(64, 256, 7, 1, 0, True, _init_w)
+        self.fc = nn.Linear(256 * 21 * 11, 2)
+    def forward(self, x):
+        if self.do_zscore:
+            with torch.no_grad(): x = self.zscore(x)
+        def _convs(x):
+            x = _relu(_maxpool(_lrn(self.conv1(x))))
+            x = _relu(_maxpool(_lrn(self.conv2(x))))
+            return _relu(self.conv3(x))
+        g,p = [_convs(i) for i in torch.split(x, 1, dim=1)]
+        x = _dropout(torch.abs(g - p))
         return self.fc(x.view(x.size(0), -1))
 
 import contextlib
@@ -252,7 +280,7 @@ def main(
     """Train models for cross-view gait recognition."""
     torch.cuda.set_device(int(gpu))
     data = get_data(Path('../data'), dataset, splits, bs, task, split)
-    get_net = {'lb':LBNet, 'mt':MTNet, 'gt':None}.get(model, None)
+    get_net = {'lb':LBNet,'mt':MTNet,'s':SiameseNet}.get(model, None)
     if get_net: net = get_net()
     else: assert False, 'Not implemented for model {}.'.format(model)
     model_dir = Path('output')/dataset
