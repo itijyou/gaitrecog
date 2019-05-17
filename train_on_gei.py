@@ -212,7 +212,8 @@ class LBNet(nn.Module):
             with torch.no_grad(): x = self.zscore(x)
         x = _relu(_maxpool(_lrn(self.conv1(x))))
         x = _relu(_maxpool(_lrn(self.conv2(x))))
-        x = _dropout(self.conv3(x))
+        #x = _dropout(self.conv3(x))# missed the ReLU
+        x = _dropout(_relu(self.conv3(x)))
         return self.fc(x.view(x.size(0), -1))
 class MTNet(nn.Module):
     "Mid-level @ Top with 3 conv layers."
@@ -230,7 +231,7 @@ class MTNet(nn.Module):
             x = _relu(_maxpool(_lrn(self.conv1(x))))
             return _relu(_maxpool(_lrn(self.conv2(x))))
         x = torch.cat([_convs(i) for i in torch.split(x, 1, dim=1)], dim=1)
-        x = _dropout(self.conv3(x))
+        x = _dropout(_relu(self.conv3(x)))
         return self.fc(x.view(x.size(0), -1))
 class SiameseNet(nn.Module):
     "Siamese with 3 conv layers."
