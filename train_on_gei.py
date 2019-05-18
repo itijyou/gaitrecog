@@ -55,6 +55,7 @@ class PairList(ImageList):
             ib = np.repeat(np.arange(probes), gallery).astype(np.uint16)
             pos = self.items1.inner_df.pid.loc[ia].values == self.items2.inner_df.pid.loc[ib].values
             self.items = [(a,b,p) for a,b,p in zip(ia,ib,pos)]
+        self._label_list = LabelListEx
         self.copy_new.extend(['items1','items2','perm_len'])
     def get(self, i):
         if self.rand:
@@ -71,7 +72,7 @@ class PairList(ImageList):
             # sampled pairs
             self.items[i] = (a, b, pos)
         else: a,b = self.items[i][:2]
-        return Image(torch.cat((self.items1[a].px, self.items2[b].px), 0))
+        return Image(torch.cat((self.items1[a].px,self.items2[b].px), 0))
 
 class PairVerificationProcessor(CategoryProcessor):
     "`PreProcessor` that do nothing to items for preprocessing."
@@ -79,7 +80,6 @@ class PairVerificationProcessor(CategoryProcessor):
         if self.classes is None: self.create_classes(self.generate_classes(ds.items))
         ds.classes = self.classes
         ds.c2i = self.c2i
-
 class PairVerificationList(CategoryList):
     "`ItemList` for pair verification."
     _processor=PairVerificationProcessor
@@ -91,6 +91,22 @@ class PairVerificationList(CategoryList):
         if o is None: return None
         o = int(o[-1])
         return Category(o, self.classes[o])
+
+class LabelListEx(LabelList):
+    "`LabelList` for `PairList`, applying diff tfm per item of a pair."
+    def __getitem__(self,idxs:Union[int,np.ndarray])->'LabelList':
+        idxs = try_int(idxs)
+        if isinstance(idxs, Integral):
+            if self.item is None: x,y = self.x[idxs],self.y[idxs]
+            else: x,y = self.item,0
+            if self.tfms or self.tfmargs:
+                _new = x.__class__
+                x = _new(torch.cat([_new(x.px[i:i+1]).apply_tfms(self.tfms,**self.tfmargs).px for i in range(x.px.shape[0])], 0))
+            if hasattr(self, 'tfms_y') and self.tfm_y and self.item is None:
+                y = y.apply_tfms(self.tfms_y, **{**self.tfmargs_y, 'do_resolve':False})
+            if y is None: y=0
+            return x,y
+        else: return self.new(self.x[idxs], self.y[idxs])
 
 _flatten = lambda x: sum((list(i) for i in x), [])
 def get_data(data_root, dataset, splits, bs, task, split):
@@ -130,7 +146,9 @@ def get_data(data_root, dataset, splits, bs, task, split):
             return ImageListEx(vl_x[sm_inds], open_mode='array', inner_df=sm_vl_df)
         vl_list_g,vl_list_p = [_gen_vl_list(i) for i in (1,0)]
         vl_list = PairList(vl_list_g, vl_list_p)
-    tfms = rand_pad(0, (126, 86))
+    tfms = rand_pad(0, (126, 86), mode='zeros')
+    tfms.append(rotate(degrees=(-8,8), p=0.75))
+    tfms.append(zoom(scale=(0.9,1.1), p=0.75))
     ret = (ItemListsEx(data_dir, tr_list, vl_list)
            .label_const(label_cls=PairVerificationList)
            .transform((tfms, []))
@@ -175,9 +193,15 @@ class RecorderEx(Recorder):
         if last_metrics is not None: self.val_losses.append(last_metrics[0])
         else: last_metrics = [] if self.no_val else [None]
         if len(last_metrics) > 1: self.metrics.append(last_metrics[1:])
-        xl = self.learn.data.valid_dl.x
-        self.acc.append(_calc_acc(self.preds,xl.items1.inner_df,xl.items2.inner_df))
-        self.format_stats([epoch, smooth_loss] + last_metrics + [self.acc[-1].mean()])
+        stats = [epoch, smooth_loss] + last_metrics
+        if hasattr(self, 'preds'):
+            xl = self.learn.data.valid_dl.x
+            acc = _calc_acc(self.preds,xl.items1.inner_df,xl.items2.inner_df)
+            self.acc.append(acc)
+            pacc = array([j[array(chain(range(i),range(i+1,acc.shape[1])))] for i,j in enumerate(acc)])
+            stats.append(pacc.mean())
+        else: stats.append(None)
+        self.format_stats(stats)
 
 @dataclass
 class LearnerEx(Learner):
@@ -191,6 +215,8 @@ _lrn = nn.LocalResponseNorm(5, alpha=0.0001, beta=0.75, k=2.)
 _maxpool = nn.MaxPool2d(2, 2, 0)
 _relu = nn.ReLU()
 _dropout = nn.Dropout()
+_gpool = PoolFlatten()
+
 class GaitNet(nn.Module):
     #"Base class for gait recognition."
     def __init__(self, do_zscore:bool=True):
@@ -198,11 +224,12 @@ class GaitNet(nn.Module):
         self.do_zscore = do_zscore
     def forward(self, x):
         raise Exception("Your data isn't labeled, can't turn it in a `DataBunch` yet!")
+
 class LBNet(GaitNet):
     "Local @ Bottom with 3 conv layers."
     def __init__(self):
         super().__init__()
-        if self.do_zscore: self.zscore = batchnorm_2d(2, NormType.Batch)
+        if self.do_zscore: self.zscore = batchnorm_2d(2)
         self.conv1 = conv2d(2, 16, 7, 1, 0, True, _init_w)
         self.conv2 = conv2d(16, 64, 7, 1, 0, True, _init_w)
         self.conv3 = conv2d(64, 256, 7, 1, 0, True, _init_w)
@@ -219,7 +246,7 @@ class MTNet(GaitNet):
     "Mid-level @ Top with 3 conv layers."
     def __init__(self):
         super().__init__()
-        if self.do_zscore: self.zscore = batchnorm_2d(2, NormType.Batch)
+        if self.do_zscore: self.zscore = batchnorm_2d(2)
         self.conv1 = conv2d(1, 16, 7, 1, 0, True, _init_w)
         self.conv2 = conv2d(16, 64, 7, 1, 0, True, _init_w)
         self.conv3 = conv2d(128, 256, 7, 1, 0, True, _init_w)
@@ -237,7 +264,7 @@ class SiameseNet(GaitNet):
     "Siamese with 3 conv layers."
     def __init__(self):
         super().__init__()
-        if self.do_zscore: self.zscore = batchnorm_2d(2, NormType.Batch)
+        if self.do_zscore: self.zscore = batchnorm_2d(2)
         self.conv1 = conv2d(1, 16, 7, 1, 0, True, _init_w)
         self.conv2 = conv2d(16, 64, 7, 1, 0, True, _init_w)
         self.conv3 = conv2d(64, 256, 7, 1, 0, True, _init_w)
@@ -252,6 +279,32 @@ class SiameseNet(GaitNet):
         g,p = [_convs(i) for i in torch.split(x, 1, dim=1)]
         x = _dropout(torch.abs(g - p))
         return self.fc(x.view(x.size(0), -1))
+
+class DebugNet(GaitNet):
+    "Try larger networks."
+    def __init__(self):
+        super().__init__()
+        if self.do_zscore: self.zscore = batchnorm_2d(2)
+        self.conv1 = conv2d(1, 16, 7, 1, 0, True, _init_w)
+        self.conv2 = conv2d(16, 64, 7, 1, 0, True, _init_w)
+        self.conv3 = conv2d(64, 256, 3, 1, 0, False, _init_w)
+        self.bn3 = batchnorm_2d(256)
+        self.conv4 = conv2d(256, 512, 3, 1, 0, False, _init_w)
+        self.bn4 = batchnorm_2d(512)
+        self.conv5 = conv2d(1024, 1024, 3, 1, 0, False, _init_w)
+        self.bn5 = batchnorm_2d(1024)
+        self.fc = nn.Linear(1024, 2)
+    def forward(self, x):
+        if self.do_zscore:
+            with torch.no_grad(): x = self.zscore(x)
+        def _convs(x):
+            x = _relu(_maxpool(_lrn(self.conv1(x))))
+            x = _relu(_maxpool(_lrn(self.conv2(x))))
+            x = _relu(self.bn3(self.conv3(x)))
+            return _dropout(_relu(self.bn4(self.conv4(x))))
+        x = torch.cat([_convs(i) for i in torch.split(x, 1, dim=1)], dim=1)
+        x = _dropout(_gpool(_relu(self.bn5(self.conv5(x)))))
+        return self.fc(x)
 
 import contextlib
 @contextlib.contextmanager
@@ -281,7 +334,7 @@ def main(
     """Train models for cross-view gait recognition."""
     torch.cuda.set_device(int(gpu))
     data = get_data(Path('../data'), dataset, splits, bs, task, split)
-    get_net = {'lb':LBNet,'mt':MTNet,'s':SiameseNet}.get(model, None)
+    get_net = {'lb':LBNet,'mt':MTNet,'s':SiameseNet,'d':DebugNet}.get(model, None)
     if get_net: net = get_net()
     else: assert False, 'Not implemented for model {}.'.format(model)
     model_dir = Path('output')/dataset
