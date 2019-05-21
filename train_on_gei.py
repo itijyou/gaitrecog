@@ -109,13 +109,7 @@ class LabelListEx(LabelList):
         else: return self.new(self.x[idxs], self.y[idxs])
 
 _flatten = lambda x: sum((list(i) for i in x), [])
-def get_data(data_root, dataset, splits, bs, task, split):
-    data_dir = data_root/dataset
-    with open(data_dir/'data.pkl', 'rb') as f: data = pickle.load(f).astype(np.single)
-    df = pd.read_csv(data_dir/'labels.csv', index_col=0)
-    splits = [int(_) for _ in splits.split(',')]
-    last_vl = max(df.loc[df.pid.between(splits[1]-1, splits[1]-0.5)].index.values)
-    data -= data[:last_vl+1].mean(0, keepdims=True)
+def get_data(data_dir, data, df, splits, bs, task, split):
     if task=='tr':
         splits_l,splits_r = [0]+splits[:1],splits[:2]
         if split=='tv':
@@ -146,12 +140,15 @@ def get_data(data_root, dataset, splits, bs, task, split):
             return ImageListEx(vl_x[sm_inds], open_mode='array', inner_df=sm_vl_df)
         vl_list_g,vl_list_p = [_gen_vl_list(i) for i in (1,0)]
         vl_list = PairList(vl_list_g, vl_list_p)
-    tfms = rand_pad(0, (126, 86), mode='zeros')
-    tfms.append(rotate(degrees=(-8,8), p=0.75))
-    tfms.append(zoom(scale=(0.9,1.1), p=0.75))
+    tfms = rand_pad(0, (126,86))
+    tfms_vl = [crop(size=(126,86))]
+    #tfms = rand_pad(2, (130,90), mode='zeros')
+    #tfms.append(rotate(degrees=(-8,8), p=0.75))
+    #tfms.append(zoom(scale=(0.9,1.1), p=0.75))
+    #tfms_vl = [pad(padding=1, mode='zeros')]
     ret = (ItemListsEx(data_dir, tr_list, vl_list)
            .label_const(label_cls=PairVerificationList)
-           .transform((tfms, []))
+           .transform((tfms, tfms_vl))
            .databunch(bs=bs))
     return ret
 
@@ -219,9 +216,8 @@ _gpool = PoolFlatten()
 
 class GaitNet(nn.Module):
     #"Base class for gait recognition."
-    def __init__(self, do_zscore:bool=True):
-        super().__init__()
-        self.do_zscore = do_zscore
+    do_zscore:bool=True
+    data_mean:Tensor=None
     def forward(self, x):
         raise Exception("Your data isn't labeled, can't turn it in a `DataBunch` yet!")
 
@@ -229,17 +225,15 @@ class LBNet(GaitNet):
     "Local @ Bottom with 3 conv layers."
     def __init__(self):
         super().__init__()
-        if self.do_zscore: self.zscore = batchnorm_2d(2)
         self.conv1 = conv2d(2, 16, 7, 1, 0, True, _init_w)
         self.conv2 = conv2d(16, 64, 7, 1, 0, True, _init_w)
         self.conv3 = conv2d(64, 256, 7, 1, 0, True, _init_w)
         self.fc = nn.Linear(256 * 21 * 11, 2)
     def forward(self, x):
-        if self.do_zscore:
-            with torch.no_grad(): x = self.zscore(x)
+        if self.data_mean is not None:
+            x -= self.data_mean
         x = _relu(_maxpool(_lrn(self.conv1(x))))
         x = _relu(_maxpool(_lrn(self.conv2(x))))
-        #x = _dropout(self.conv3(x))# missed the ReLU
         x = _dropout(_relu(self.conv3(x)))
         return self.fc(x.view(x.size(0), -1))
 class MTNet(GaitNet):
@@ -284,27 +278,28 @@ class DebugNet(GaitNet):
     "Try larger networks."
     def __init__(self):
         super().__init__()
-        if self.do_zscore: self.zscore = batchnorm_2d(2)
-        self.conv1 = conv2d(1, 16, 7, 1, 0, True, _init_w)
-        self.conv2 = conv2d(16, 64, 7, 1, 0, True, _init_w)
+        self.conv1 = conv2d(1, 16, 7, 1, 0, False, _init_w)
+        self.bn1 = batchnorm_2d(16)
+        self.conv2 = conv2d(16, 64, 7, 1, 0, False, _init_w)
+        self.bn2 = batchnorm_2d(64)
         self.conv3 = conv2d(64, 256, 3, 1, 0, False, _init_w)
         self.bn3 = batchnorm_2d(256)
         self.conv4 = conv2d(256, 512, 3, 1, 0, False, _init_w)
         self.bn4 = batchnorm_2d(512)
-        self.conv5 = conv2d(1024, 1024, 3, 1, 0, False, _init_w)
-        self.bn5 = batchnorm_2d(1024)
-        self.fc = nn.Linear(1024, 2)
+        self.conv5 = conv2d(1024, 512, 3, 1, 1, False, _init_w)
+        self.bn5 = batchnorm_2d(512)
+        self.fc = nn.Linear(512*10*5, 2)
+        _init_w(self.fc.weight)
+        self.fc.bias.data.fill_(0.)
     def forward(self, x):
-        if self.do_zscore:
-            with torch.no_grad(): x = self.zscore(x)
         def _convs(x):
-            x = _relu(_maxpool(_lrn(self.conv1(x))))
-            x = _relu(_maxpool(_lrn(self.conv2(x))))
-            x = _relu(self.bn3(self.conv3(x)))
+            x = _relu(_maxpool(self.bn1(self.conv1(x))))
+            x = _relu(_maxpool(self.bn2(self.conv2(x))))
+            x = _relu(_maxpool(self.bn3(self.conv3(x))))
             return _dropout(_relu(self.bn4(self.conv4(x))))
         x = torch.cat([_convs(i) for i in torch.split(x, 1, dim=1)], dim=1)
-        x = _dropout(_gpool(_relu(self.bn5(self.conv5(x)))))
-        return self.fc(x)
+        x = _dropout(_relu(self.bn5(self.conv5(x))))
+        return self.fc(x.view(x.size(0), -1))
 
 import contextlib
 @contextlib.contextmanager
@@ -318,7 +313,7 @@ def np_print_options(*args, **kwargs):
 def main(
         gpu:Param("GPU to run on", str)=0,
         dataset:Param("Dataset to use", str)='casiab-nm',
-        splits:Param("Ends of subsets (tr,vl,ts)", str)='50,74,124',
+        splitset:Param("Ends of subsets (tr,vl,ts)", str)='50,74,124',
         model:Param("Model to use", str)='lb',
         opt:Param("Optimizer: 'sgd'", str)='sgd',
         lr:Param("Learning rate", float)=0.01,
@@ -333,14 +328,21 @@ def main(
     ):
     """Train models for cross-view gait recognition."""
     torch.cuda.set_device(int(gpu))
-    data = get_data(Path('../data'), dataset, splits, bs, task, split)
+    data_dir = Path('../data')/dataset
+    with open(data_dir/'data.pkl', 'rb') as f: raw_data = pickle.load(f).astype(np.single)
+    df = pd.read_csv(data_dir/'labels.csv', index_col=0)
+    splits = [int(_) for _ in splitset.split(',')]
+    last_vl = max(df.loc[df.pid.between(splits[1]-1, splits[1]-0.5)].index.values)
+    data_mean = raw_data[:last_vl+1].mean(0, keepdims=True)
+    data = get_data(data_dir, raw_data, df, splits, bs, task, split)
     get_net = {'lb':LBNet,'mt':MTNet,'s':SiameseNet,'d':DebugNet}.get(model, None)
-    if get_net: net = get_net()
+    if get_net: net = get_net(data_mean=torch.tensor(data_mean[0,1:-1,1:-1].reshape((1,1,126,86))))
     else: assert False, 'Not implemented for model {}.'.format(model)
     model_dir = Path('output')/dataset
     assert opt == 'sgd', f'Unknown opt method {opt}'
     opt_func = partial(optim.SGD, momentum=mom)
     learn = LearnerEx(data, net, opt_func=opt_func, metrics=accuracy, wd=wd, path=Path('..'), model_dir=model_dir)
+    #requires_grad(learn.layer_groups[0][0], False)
     learn.callback_fns[0] = partial(RecorderEx, add_time=learn.add_time)
     if task=='tr':
         model_name = f'{dataset}_{model}_{opt}-{lr}-{mom}-{wd}_{sched}_bs{bs}_{split}'
