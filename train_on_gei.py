@@ -309,6 +309,26 @@ def np_print_options(*args, **kwargs):
     yield
     np.set_printoptions(**original)
 
+class SGDEx(optim.SGD):
+    "To reproduce cuda-convnet2 SGD."
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+        for group in self.param_groups:
+            weight_decay = group['weight_decay']
+            momentum = group['momentum']
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                param_state = self.state[p]
+                buf = param_state['momentum_buffer'] = torch.zeros_like(p.data)
+                buf.mul_(momentum)
+                buf.add_(group['lr'], p.grad)
+                buf.add_(weight_decay*group['lr'], p.data)
+                p.data.sub_(buf)
+        return loss
+
 @call_parse
 def main(
         gpu:Param("GPU to run on", str)=0,
@@ -336,12 +356,13 @@ def main(
     data_mean = raw_data[:last_vl+1].mean(0, keepdims=True)
     data = get_data(data_dir, raw_data, df, splits, bs, task, split)
     get_net = {'lb':LBNet,'mt':MTNet,'s':SiameseNet,'d':DebugNet}.get(model, None)
-    if get_net: net = get_net(data_mean=torch.tensor(data_mean[0,1:-1,1:-1].reshape((1,1,126,86))))
+    if get_net: net = get_net(data_mean=torch.Tensor(data_mean[0,1:-1,1:-1].reshape((1,1,126,86))))
     else: assert False, 'Not implemented for model {}.'.format(model)
     model_dir = Path('output')/dataset
     assert opt == 'sgd', f'Unknown opt method {opt}'
-    opt_func = partial(optim.SGD, momentum=mom)
-    learn = LearnerEx(data, net, opt_func=opt_func, metrics=accuracy, wd=wd, path=Path('..'), model_dir=model_dir)
+    opt_func = partial(SGDEx, momentum=mom)
+    learn = LearnerEx(data, net, opt_func=opt_func, metrics=accuracy,
+                      true_wd=False, wd=wd, path=Path('..'), model_dir=model_dir)
     #requires_grad(learn.layer_groups[0][0], False)
     learn.callback_fns[0] = partial(RecorderEx, add_time=learn.add_time)
     if task=='tr':
