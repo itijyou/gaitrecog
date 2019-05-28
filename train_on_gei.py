@@ -214,7 +214,7 @@ _dropout = nn.Dropout()
 _gpool = PoolFlatten()
 
 class GaitNet(nn.Module):
-    #"Base class for gait recognition."
+    "Base class for gait recognition."
     data_mean:Tensor=None
     def forward(self, x):
         raise Exception("Your data isn't labeled, can't turn it in a `DataBunch` yet!")
@@ -358,7 +358,6 @@ def main(
     opt_func = partial(SGDEx, momentum=mom)
     learn = LearnerEx(data, net, opt_func=opt_func, metrics=accuracy,
                       true_wd=False, wd=wd, path=Path('..'), model_dir=model_dir)
-    #requires_grad(learn.layer_groups[0][0], False)
     learn.callback_fns[0] = partial(RecorderEx, add_time=learn.add_time)
     if task=='tr':
         model_name = f'{dataset}_{model}_{opt}-{lr}-{mom}-{wd}_{sched}_bs{bs}_{split}'
