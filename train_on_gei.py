@@ -42,8 +42,7 @@ _randint = lambda x: torch.randint(x, (1,)).item()
 class PairList(ImageList):
     "`PairList` for verification."
     def __init__(self, items1:ImageList, items2:ImageList=None, perm_len:int=0, **kwargs):
-        kwargs['items'] = []
-        super().__init__(**kwargs)
+        super().__init__(items=[], **kwargs)
         self.items1 = items1 # gallery
         self.items2 = items2 or self.items1
         self.perm_len,self.rand = perm_len,perm_len>0
@@ -141,7 +140,7 @@ def get_data(data_dir, data, df, splits, bs, task, split):
         vl_list_g,vl_list_p = [_gen_vl_list(i) for i in (1,0)]
         vl_list = PairList(vl_list_g, vl_list_p)
     tfms = rand_pad(0, (126,86))
-    tfms_vl = [crop(size=(126,86))]
+    tfms_vl = [crop(size=(126,86), is_random=False)]
     #tfms = rand_pad(2, (130,90), mode='zeros')
     #tfms.append(rotate(degrees=(-8,8), p=0.75))
     #tfms.append(zoom(scale=(0.9,1.1), p=0.75))
@@ -216,7 +215,6 @@ _gpool = PoolFlatten()
 
 class GaitNet(nn.Module):
     #"Base class for gait recognition."
-    do_zscore:bool=True
     data_mean:Tensor=None
     def forward(self, x):
         raise Exception("Your data isn't labeled, can't turn it in a `DataBunch` yet!")
@@ -229,6 +227,7 @@ class LBNet(GaitNet):
         self.conv2 = conv2d(16, 64, 7, 1, 0, True, _init_w)
         self.conv3 = conv2d(64, 256, 7, 1, 0, True, _init_w)
         self.fc = nn.Linear(256 * 21 * 11, 2)
+        
     def forward(self, x):
         if self.data_mean is not None:
             x -= self.data_mean
@@ -240,14 +239,11 @@ class MTNet(GaitNet):
     "Mid-level @ Top with 3 conv layers."
     def __init__(self):
         super().__init__()
-        if self.do_zscore: self.zscore = batchnorm_2d(2)
         self.conv1 = conv2d(1, 16, 7, 1, 0, True, _init_w)
         self.conv2 = conv2d(16, 64, 7, 1, 0, True, _init_w)
         self.conv3 = conv2d(128, 256, 7, 1, 0, True, _init_w)
         self.fc = nn.Linear(256 * 21 * 11, 2)
     def forward(self, x):
-        if self.do_zscore:
-            with torch.no_grad(): x = self.zscore(x)
         def _convs(x):
             x = _relu(_maxpool(_lrn(self.conv1(x))))
             return _relu(_maxpool(_lrn(self.conv2(x))))
@@ -258,14 +254,11 @@ class SiameseNet(GaitNet):
     "Siamese with 3 conv layers."
     def __init__(self):
         super().__init__()
-        if self.do_zscore: self.zscore = batchnorm_2d(2)
         self.conv1 = conv2d(1, 16, 7, 1, 0, True, _init_w)
         self.conv2 = conv2d(16, 64, 7, 1, 0, True, _init_w)
         self.conv3 = conv2d(64, 256, 7, 1, 0, True, _init_w)
         self.fc = nn.Linear(256 * 21 * 11, 2)
     def forward(self, x):
-        if self.do_zscore:
-            with torch.no_grad(): x = self.zscore(x)
         def _convs(x):
             x = _relu(_maxpool(_lrn(self.conv1(x))))
             x = _relu(_maxpool(_lrn(self.conv2(x))))
@@ -322,7 +315,9 @@ class SGDEx(optim.SGD):
                 if p.grad is None:
                     continue
                 param_state = self.state[p]
-                buf = param_state['momentum_buffer'] = torch.zeros_like(p.data)
+                if 'momentum_buffer' not in param_state:
+                    param_state['momentum_buffer'] = torch.zeros_like(p.data)
+                buf = param_state['momentum_buffer']
                 buf.mul_(momentum)
                 buf.add_(group['lr'], p.grad)
                 buf.add_(weight_decay*group['lr'], p.data)
