@@ -73,15 +73,8 @@ class PairList(ImageList):
         else: a,b = self.items[i][:2]
         return Image(torch.cat((self.items1[a].px,self.items2[b].px), 0))
 
-class PairVerificationProcessor(CategoryProcessor):
-    "`PreProcessor` that do nothing to items for preprocessing."
-    def process(self, ds):
-        if self.classes is None: self.create_classes(self.generate_classes(ds.items))
-        ds.classes = self.classes
-        ds.c2i = self.c2i
 class PairVerificationList(CategoryList):
     "`ItemList` for pair verification."
-    _processor=PairVerificationProcessor
     def __init__(self, items:Iterator, x:PairList, classes:Collection=[0,1], **kwargs):
         super().__init__(items, classes=classes, **kwargs)
         self.x = x
