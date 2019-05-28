@@ -317,6 +317,20 @@ class SGDEx(optim.SGD):
                 p.data.sub_(buf)
         return loss
 
+class GeneralSchedulerEx(GeneralScheduler):
+    "Schedule multiple `TrainingPhase` with 2xlr for bias."
+    def on_batch_end(self, train, **kwargs:Any)->None:
+        if train:
+            if self.idx_s >= len(self.scheds): return {'stop_training': True, 'stop_epoch': True}
+            sched = self.scheds[self.idx_s]
+            for k,v in sched.items():
+                tv = v.step()
+                if k=='lr': lr = tv
+                self.opt.set_stat(k, tv)
+            for pg in self.opt.param_groups[1::2]:
+                pg['lr'] = lr*2
+            if list(sched.values())[0].is_done: self.idx_s += 1
+
 @call_parse
 def main(
         gpu:Param("GPU to run on", str)=0,
@@ -361,7 +375,7 @@ def main(
         iters = np.append(iters, batches).astype(np.int)
         phs = [TrainingPhase(x).schedule_hp('lr', lr*0.1**i) for i,x in enumerate(iters)]
         learn.callback_fns += [
-            partial(GeneralScheduler, phases=phs),
+            partial(GeneralSchedulerEx, phases=phs),
             partial(SaveModelCallback, every='epoch', name=model_name),
         ]
         learn.fit(epochs, 1)
