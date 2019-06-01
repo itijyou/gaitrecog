@@ -132,8 +132,10 @@ def get_data(data_dir, data, df, splits, bs, task, split):
             return ImageListEx(vl_x[sm_inds], open_mode='array', inner_df=sm_vl_df)
         vl_list_g,vl_list_p = [_gen_vl_list(i) for i in (1,0)]
         vl_list = PairList(vl_list_g, vl_list_p)
-    tfms = rand_pad(0, (126,86))
-    tfms_vl = [crop(size=(126,86), is_random=False)]
+    _pad = TfmPixel(lambda x: F.pad(x[None], (1,1))[0], order=-10)(is_random=False)
+    tfms = [_pad, crop(size=(126,88), row_pct=(0,1), col_pct=(0,1))]
+    #tfms = rand_pad(0, (126,88))
+    tfms_vl = [crop(size=(126,88), is_random=False)]
     #tfms = rand_pad(2, (130,90), mode='zeros')
     #tfms.append(rotate(degrees=(-8,8), p=0.75))
     #tfms.append(zoom(scale=(0.9,1.1), p=0.75))
@@ -214,16 +216,19 @@ class GaitNet(nn.Module):
 
 class LBNet(GaitNet):
     "Local @ Bottom with 3 conv layers."
-    def __init__(self):
+    def __init__(self, data_mean:Tensor=None):
         super().__init__()
+        self.data_mean = data_mean
         self.conv1 = conv2d(2, 16, 7, 1, 0, True, _init_w)
         self.conv2 = conv2d(16, 64, 7, 1, 0, True, _init_w)
         self.conv3 = conv2d(64, 256, 7, 1, 0, True, _init_w)
-        self.fc = nn.Linear(256 * 21 * 11, 2)
+        self.fc = init_default(nn.Linear(256*21*21, 2), _init_w)
         
     def forward(self, x):
         if self.data_mean is not None:
+            if not self.data_mean.is_cuda: self.data_mean = self.data_mean.to(x.device)
             x -= self.data_mean
+        x = F.pad(x, (19,19))
         x = _relu(_maxpool(_lrn(self.conv1(x))))
         x = _relu(_maxpool(_lrn(self.conv2(x))))
         x = _dropout(_relu(self.conv3(x)))
@@ -358,7 +363,7 @@ def main(
     data_mean = raw_data[:last_vl+1].mean(0, keepdims=True)
     data = get_data(data_dir, raw_data, df, splits, bs, task, split)
     get_net = {'lb':LBNet,'mt':MTNet,'s':SiameseNet,'d':DebugNet}.get(model, None)
-    if get_net: net = get_net(data_mean=torch.Tensor(data_mean[0,1:-1,1:-1].reshape((1,1,126,86))))
+    if get_net: net = get_net(data_mean=torch.from_numpy(data_mean[0,1:-1,:].reshape((1,1,126,-1))))
     else: assert False, 'Not implemented for model {}.'.format(model)
     model_dir = Path('output')/dataset
     assert opt == 'sgd', f'Unknown opt method {opt}'
