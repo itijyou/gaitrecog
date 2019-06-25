@@ -1,7 +1,6 @@
 from fastai.script import *
 from fastai.vision import *
 from fastai.callbacks import *
-torch.backends.cudnn.benchmark = True
 
 
 from itertools import chain
@@ -17,9 +16,9 @@ def np_print_options(*args, **kwargs):
 
 def set_seed(seed=0):
     np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    torch.manual_seed(seed + 1e8)
     torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 class ImageListEx(ImageList):
@@ -355,6 +354,7 @@ def main(
     ):
     """Train models for cross-view gait recognition."""
     torch.cuda.set_device(int(gpu))
+    torch.backends.cudnn.benchmark = True
     if seed: set_seed(seed)
     data,data_mean = get_data(dataset, splitset, bs, task, split)
     get_net = {'lb':LBNet,'mt':MTNet,'s':SiameseNet,'d':DebugNet}.get(model, None)
@@ -385,7 +385,7 @@ def main(
         learn.load(trained)
         _ = learn.get_preds()
         xl = learn.data.valid_dl.x
-        # (probe,gallery)
+        # acc.shape is (probe,gallery)
         acc = RecorderEx.calc_acc(learn.recorder.preds, xl.items1.inner_df, xl.items2.inner_df)
         pacc = array([j[array(chain(range(i),range(i+1,acc.shape[1])))] for i,j in enumerate(acc)])
         with np_print_options(formatter={'float':'{:1.7f}'.format}, threshold=sys.maxsize):
