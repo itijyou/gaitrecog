@@ -380,9 +380,10 @@ def main(
         ]
         learn.fit(epochs, 1)
     else:
+        learn.create_opt(lr, wd)
         # callback_fns are never called in get_preds
         learn.callbacks += [learn.callback_fns[0](learn)]
-        learn.load(trained)
+        learn.load(trained, purge=False)
         _ = learn.get_preds()
         xl = learn.data.valid_dl.x
         # acc.shape is (probe,gallery)
