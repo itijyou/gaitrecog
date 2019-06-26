@@ -340,7 +340,7 @@ def main(
         seed:Param("Set the random seed", int)=None,
         dataset:Param("Dataset to use", str)='casiab-nm',
         splitset:Param("Ends of subsets (tr,vl,ts)", str)='50,74,124',
-        model:Param("Model to use", str)='lb',
+        model:Param("Model to use (lb/mt/s)", str)='lb',
         opt:Param("Optimizer: 'sgd'", str)='sgd',
         lr:Param("Learning rate", float)=0.01,
         mom:Param("Momentum", float)=0.9,
